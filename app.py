@@ -605,3 +605,4 @@ elif menu == "📂 Histórico & Exportar" and autenticado:
 
 
 
+
