@@ -36,9 +36,8 @@ def init_connection():
             port=st.secrets["DB_PORT"]
         )
     except Exception as e:
-        # Não mostramos o erro técnico para o usuário final, mas logamos se necessário
-        st.error("Erro de conexão com o banco de dados. Tente recarregar a página.")
-        return None
+    st.error(f"ERRO TÉCNICO: {e}")
+    return None
 
 def db_query(query, params=(), fetch=False, commit=False):
     conn = None
@@ -604,3 +603,4 @@ elif menu == "📂 Histórico & Exportar" and autenticado:
                 )
             else:
                 st.warning("Sem dados no período para exportar.")
+
