@@ -23,9 +23,8 @@ SENHA_SUPERVISOR = "1234"
 def init_connection():
     try:
         # --- CORREÇÃO DE REDE ---
-        # Força a conversão do endereço do Supabase para números (IPv4)
-        # Isso resolve o erro "Cannot assign requested address" na nuvem
         db_host = st.secrets["DB_HOST"]
+        # Traduz o endereço para IPv4 numérico para evitar bloqueio de IPv6
         ip_v4 = socket.gethostbyname(db_host)
         
         return psycopg2.connect(
@@ -36,8 +35,9 @@ def init_connection():
             port=st.secrets["DB_PORT"]
         )
     except Exception as e:
-    st.error(f"ERRO TÉCNICO: {e}")
-    return None
+        # AQUI ESTAVA O ERRO: Agora tem os espaços corretos antes do comando
+        st.error(f"ERRO TÉCNICO DETALHADO: {e}")
+        return None
 
 def db_query(query, params=(), fetch=False, commit=False):
     conn = None
@@ -603,4 +603,5 @@ elif menu == "📂 Histórico & Exportar" and autenticado:
                 )
             else:
                 st.warning("Sem dados no período para exportar.")
+
 
