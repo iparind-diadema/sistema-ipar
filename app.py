@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import psycopg2
-import socket
 from datetime import datetime, date, time, timedelta
 import io
 import os
@@ -22,21 +21,15 @@ SENHA_SUPERVISOR = "1234"
 
 def init_connection():
     try:
-        # --- CORREÇÃO DE REDE ---
-        db_host = st.secrets["DB_HOST"]
-        # Traduz o endereço para IPv4 numérico para evitar bloqueio de IPv6
-        ip_v4 = socket.gethostbyname(db_host)
-        
         return psycopg2.connect(
-            host=ip_v4, 
+            host=st.secrets["DB_HOST"],
             user=st.secrets["DB_USER"],
             password=st.secrets["DB_PASS"],
             dbname=st.secrets["DB_NAME"],
             port=st.secrets["DB_PORT"]
         )
     except Exception as e:
-        # AQUI ESTAVA O ERRO: Agora tem os espaços corretos antes do comando
-        st.error(f"ERRO TÉCNICO DETALHADO: {e}")
+        st.error(f"ERRO TÉCNICO: {e}")
         return None
 
 def db_query(query, params=(), fetch=False, commit=False):
@@ -603,5 +596,6 @@ elif menu == "📂 Histórico & Exportar" and autenticado:
                 )
             else:
                 st.warning("Sem dados no período para exportar.")
+
 
 
