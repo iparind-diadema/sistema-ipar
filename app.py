@@ -21,15 +21,20 @@ SENHA_SUPERVISOR = "1234"
 
 def init_connection():
     try:
-        return psycopg2.connect(
-            host=st.secrets["DB_HOST"],
-            user=st.secrets["DB_USER"],
-            password=st.secrets["DB_PASS"],
-            dbname=st.secrets["DB_NAME"],
-            port=st.secrets["DB_PORT"]
+        # CONEXÃO VIA URL (Mais robusta para Nuvem)
+        # Montamos uma "frase" com todos os dados e pedimos para conectar
+        # Isso ajuda o sistema a escolher o melhor caminho (IPv4) sozinho
+        
+        connection_url = (
+            f"postgresql://{st.secrets['DB_USER']}:{st.secrets['DB_PASS']}"
+            f"@{st.secrets['DB_HOST']}:{st.secrets['DB_PORT']}"
+            f"/{st.secrets['DB_NAME']}?sslmode=require"
         )
+        
+        return psycopg2.connect(connection_url)
+        
     except Exception as e:
-        st.error(f"ERRO TÉCNICO: {e}")
+        st.error(f"ERRO DE CONEXÃO: {e}")
         return None
 
 def db_query(query, params=(), fetch=False, commit=False):
@@ -596,6 +601,7 @@ elif menu == "📂 Histórico & Exportar" and autenticado:
                 )
             else:
                 st.warning("Sem dados no período para exportar.")
+
 
 
 
