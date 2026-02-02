@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import psycopg2
+import socket
 from datetime import datetime, date, time, timedelta
 import io
 import os
@@ -16,35 +17,45 @@ st.set_page_config(page_title="Controle Setor Estamparia", layout="wide", page_i
 SENHA_SUPERVISOR = "1234"
 
 # ==============================================================================
-# 2. CAMADA DE DADOS (CONEXÃO NUVEM SUPABASE/POSTGRES)
+# 2. CAMADA DE DADOS (CONEXÃO COM CORREÇÃO IPV4)
 # ==============================================================================
 
 def init_connection():
-    return psycopg2.connect(
-        host=st.secrets["DB_HOST"],
-        user=st.secrets["DB_USER"],
-        password=st.secrets["DB_PASS"],
-        dbname=st.secrets["DB_NAME"],
-        port=st.secrets["DB_PORT"]
-    )
+    try:
+        # --- CORREÇÃO DE REDE ---
+        # Força a conversão do endereço do Supabase para números (IPv4)
+        # Isso resolve o erro "Cannot assign requested address" na nuvem
+        db_host = st.secrets["DB_HOST"]
+        ip_v4 = socket.gethostbyname(db_host)
+        
+        return psycopg2.connect(
+            host=ip_v4, 
+            user=st.secrets["DB_USER"],
+            password=st.secrets["DB_PASS"],
+            dbname=st.secrets["DB_NAME"],
+            port=st.secrets["DB_PORT"]
+        )
+    except Exception as e:
+        # Não mostramos o erro técnico para o usuário final, mas logamos se necessário
+        st.error("Erro de conexão com o banco de dados. Tente recarregar a página.")
+        return None
 
 def db_query(query, params=(), fetch=False, commit=False):
     conn = None
     data = None
     try:
         conn = init_connection()
-        cur = conn.cursor()
-        cur.execute(query, params)
-        if fetch:
-            data = cur.fetchall()
-        if commit:
-            conn.commit()
-        cur.close()
-    except Exception as e:
-        st.error(f"Erro de Banco de Dados: {e}")
-    finally:
         if conn:
+            cur = conn.cursor()
+            cur.execute(query, params)
+            if fetch:
+                data = cur.fetchall()
+            if commit:
+                conn.commit()
+            cur.close()
             conn.close()
+    except Exception as e:
+        st.error(f"Erro na execução do comando: {e}")
     return data
 
 def get_list(table_name):
@@ -98,13 +109,14 @@ if menu == "📝 Apontamento Diário":
     if "confirma_producao" not in st.session_state:
         st.session_state.confirma_producao = None
     
+    # Busca as listas atualizadas do banco (já com AR, BC, P1, etc.)
     ops = get_list("operadores")
     maqs = get_list("maquinas")
     list_materias = get_list("cad_materias")
     list_operacoes = get_list("cad_operacoes")
     
     if not ops or not maqs:
-        st.warning("⚠️ Atenção: Cadastre Operadores e Máquinas (em Cadastros Gerais) antes de apontar.")
+        st.warning("⚠️ Atenção: Cadastre Operadores e Máquinas antes de apontar.")
     else:
         if st.session_state.confirma_producao is None:
             with st.form("f_prod", clear_on_submit=False):
@@ -213,7 +225,7 @@ if menu == "📝 Apontamento Diário":
     conn = init_connection()
     if conn:
         df_ultimos = pd.read_sql("""
-            SELECT id, fim_prod as "Hora Fim", operador, maquina, descricao_pc as "Produto", qtd_produzida as "Qtd" 
+            SELECT id, data, fim_prod as "Hora Fim", operador, maquina, descricao_pc as "Produto", qtd_produzida as "Qtd" 
             FROM apontamentos 
             WHERE ativo = 1 
             ORDER BY id DESC LIMIT 5
@@ -246,7 +258,8 @@ elif menu == "⏸️ Registrar Parada":
     st.subheader("Paradas do Dia")
     conn = init_connection()
     if conn:
-        df_hj = pd.read_sql("SELECT * FROM paradas_reg WHERE data = %s AND ativo = 1", conn, params=(date.today().isoformat(),))
+        # Correção ::date para garantir que o filtro funcione
+        df_hj = pd.read_sql("SELECT * FROM paradas_reg WHERE data::date = %s AND ativo = 1", conn, params=(date.today(),))
         conn.close()
         st.dataframe(df_hj, use_container_width=True)
 
@@ -540,21 +553,22 @@ elif menu == "📂 Histórico & Exportar" and autenticado:
         
         conn = init_connection()
         if conn:
+            # Correção ::date para permitir filtro de data no Supabase
             df_prod = pd.read_sql("""
                 SELECT * FROM apontamentos 
-                WHERE ativo = 1 AND data BETWEEN %s AND %s
+                WHERE ativo = 1 AND data::date BETWEEN %s AND %s
                 ORDER BY data DESC, id DESC
             """, conn, params=(dt_ini, dt_fim))
             
             df_par = pd.read_sql("""
                 SELECT * FROM paradas_reg 
-                WHERE ativo = 1 AND data BETWEEN %s AND %s
+                WHERE ativo = 1 AND data::date BETWEEN %s AND %s
                 ORDER BY data DESC
             """, conn, params=(dt_ini, dt_fim))
             
             df_man = pd.read_sql("""
                 SELECT * FROM manutencoes 
-                WHERE ativo = 1 AND data_manut BETWEEN %s AND %s
+                WHERE ativo = 1 AND data_manut::date BETWEEN %s AND %s
                 ORDER BY data_manut DESC
             """, conn, params=(dt_ini, dt_fim))
             conn.close()
@@ -562,28 +576,31 @@ elif menu == "📂 Histórico & Exportar" and autenticado:
             st.divider()
             st.info(f"📊 **Resumo do Período Selecionado:**")
             k1, k2, k3 = st.columns(3)
-            k1.metric("Total Produzido", f"{df_prod['qtd_produzida'].sum():,} pçs")
-            k2.metric("Refugo Total", f"{df_prod['refugo'].sum():,} pçs")
-            k3.metric("Tempo Total Parado", f"{0 if df_par.empty else 'Ver Excel'} eventos")
+            k1.metric("Total Produzido", f"{df_prod['qtd_produzida'].sum():,} pçs" if not df_prod.empty else "0")
+            k2.metric("Refugo Total", f"{df_prod['refugo'].sum():,} pçs" if not df_prod.empty else "0")
+            k3.metric("Tempo Total Parado", f"{len(df_par)} eventos" if not df_par.empty else "0")
 
             st.divider()
             st.subheader("🚀 Baixar Relatório")
             
-            nome_arquivo = f"Fechamento_{dt_ini.strftime('%d%m')}_a_{dt_fim.strftime('%d%m')}.xlsx"
-            
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_prod.to_excel(writer, index=False, sheet_name='Producao')
-                df_par.to_excel(writer, index=False, sheet_name='Paradas')
-                df_man.to_excel(writer, index=False, sheet_name='Manutencao')
+            if not df_prod.empty or not df_par.empty:
+                nome_arquivo = f"Fechamento_{dt_ini.strftime('%d%m')}_a_{dt_fim.strftime('%d%m')}.xlsx"
                 
-                if not df_prod.empty:
-                    resumo = df_prod.groupby("operador")[["qtd_produzida", "refugo"]].sum().reset_index()
-                    resumo.to_excel(writer, index=False, sheet_name='Resumo_Operador')
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    if not df_prod.empty: df_prod.to_excel(writer, index=False, sheet_name='Producao')
+                    if not df_par.empty: df_par.to_excel(writer, index=False, sheet_name='Paradas')
+                    if not df_man.empty: df_man.to_excel(writer, index=False, sheet_name='Manutencao')
+                    
+                    if not df_prod.empty:
+                        resumo = df_prod.groupby("operador")[["qtd_produzida", "refugo"]].sum().reset_index()
+                        resumo.to_excel(writer, index=False, sheet_name='Resumo_Operador')
 
-            st.download_button(
-                label=f"⬇️ Baixar Excel ({nome_arquivo})",
-                data=output.getvalue(),
-                file_name=nome_arquivo,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                st.download_button(
+                    label=f"⬇️ Baixar Excel ({nome_arquivo})",
+                    data=output.getvalue(),
+                    file_name=nome_arquivo,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.warning("Sem dados no período para exportar.")
