@@ -356,62 +356,91 @@ def render_app():
                         run_query("UPDATE usinagem_maquinas SET horimetro_total = 0 WHERE nome = %s", (m,), commit=True)
                     st.success("Salvo!")
 
-    # ==========================================================================
-    # 5. CADASTROS GERAIS
+   # ==========================================================================
+    # 5. CADASTROS GERAIS (COM EDIÇÃO TIPO EXCEL)
     # ==========================================================================
     elif menu == "⚙️ Cadastros Gerais" and autenticado:
-        st.header("⚙️ Configurações do Sistema")
+        st.header("⚙️ Cadastros Inteligentes")
+        st.info("💡 Dica: Clique duas vezes na célula para editar o nome e aperte Enter. A alteração é salva automaticamente.")
+        
         tab_op, tab_mq, tab_par = st.tabs(["👥 Operadores", "🏗️ Máquinas", "🛑 Motivos Parada"])
         
-        def gerenciar_cadastro(tabela, label_singular, key_suf):
-            c1, c2 = st.columns([3, 1])
-            novo = c1.text_input(f"Novo(a) {label_singular}", key=f"n_{key_suf}")
-            if c2.button("Adicionar", key=f"a_{key_suf}"):
-                if novo:
-                    run_query(f"INSERT INTO {tabela} (nome, ativo) VALUES (%s, 1)", (novo.upper(),), commit=True)
-                    st.success("Adicionado!")
-                    st.rerun()
+        # --- FUNÇÃO MÁGICA DE EDIÇÃO ---
+        def editor_cadastros(tabela, col_nome, key_suffix):
+            # 1. Carregar dados atuais
+            df = get_dataframe(f"SELECT id, {col_nome}, ativo FROM {tabela} WHERE ativo = 1 ORDER BY {col_nome}")
             
-            df = get_dataframe(f"SELECT * FROM {tabela} WHERE ativo = 1 ORDER BY nome")
-            for _, row in df.iterrows():
-                col_a, col_b = st.columns([4, 1])
-                col_a.write(row['nome'])
-                if col_b.button("🗑️", key=f"del_{key_suf}_{row['id']}"):
-                    run_query(f"UPDATE {tabela} SET ativo = 0 WHERE id = %s", (row['id'],), commit=True)
+            # 2. Criar tabela editável
+            edited_df = st.data_editor(
+                df,
+                column_config={
+                    "id": None, # Esconde o ID
+                    "ativo": None, # Esconde o status
+                    col_nome: st.column_config.TextColumn(
+                        "Nome / Descrição",
+                        help="Clique para editar",
+                        required=True
+                    )
+                },
+                num_rows="dynamic", # Permite adicionar linhas no final
+                key=f"editor_{key_suffix}",
+                use_container_width=True
+            )
+
+            # 3. Botão para Salvar Alterações
+            if st.button("💾 Salvar Alterações", key=f"btn_{key_suffix}"):
+                try:
+                    # A. Detectar Novos (IDs que não existem no banco original)
+                    # O data_editor cria IDs temporários para novas linhas, geralmente strings ou números altos, ou vazios
+                    # Vamos comparar pelo índice ou lógica de diferença. 
+                    # Mas o jeito mais seguro no Streamlit simples é deletar e recriar ou update um a um.
+                    
+                    # Lógica Simplificada Robusta:
+                    # Percorre o DF editado. Se tem ID, faz Update. Se não tem (novo), faz Insert.
+                    
+                    # Para facilitar, vamos fazer um loop no que está na tela
+                    for index, row in edited_df.iterrows():
+                        id_atual = row['id']
+                        nome_atual = row[col_nome]
+                        
+                        # Se o nome estiver vazio, pula
+                        if not nome_atual: continue
+
+                        # Verifica se é um registro existente (tem ID numérico)
+                        if pd.notna(id_atual) and isinstance(id_atual, (int, float)):
+                            # UPDATE
+                            sql = f"UPDATE {tabela} SET {col_nome} = %s WHERE id = %s"
+                            run_query(sql, (str(nome_atual).upper(), int(id_atual)), commit=True)
+                        else:
+                            # INSERT (Novos registros adicionados na tabela)
+                            # Nota: O st.data_editor para novas linhas deixa o ID como None ou NaN
+                            sql = f"INSERT INTO {tabela} ({col_nome}, ativo) VALUES (%s, 1)"
+                            run_query(sql, (str(nome_atual).upper(),), commit=True)
+                    
+                    st.success("✅ Banco de dados atualizado com sucesso!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao salvar: {e}")
+
+            st.divider()
+            st.markdown("#### 🗑️ Área de Exclusão")
+            with st.expander("Clique aqui para Excluir um item"):
+                lista_exclusao = df[col_nome].tolist()
+                item_del = st.selectbox(f"Selecione para excluir ({key_suffix})", lista_exclusao, key=f"sel_del_{key_suffix}")
+                if st.button("Confirmar Exclusão", key=f"del_{key_suffix}"):
+                    run_query(f"UPDATE {tabela} SET ativo = 0 WHERE {col_nome} = %s", (item_del,), commit=True)
+                    st.success("Item excluído!")
                     st.rerun()
 
-        with tab_op: gerenciar_cadastro("usinagem_operadores", "Operador", "oper")
-        with tab_mq: 
-            # Cadastro de Máquinas precisa ser customizado por causa do horímetro
-            c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
-            n_mq = c1.text_input("Nome (Ex: CNC-01)")
-            mod_mq = c2.text_input("Modelo")
-            meta_mq = c3.number_input("Meta Manut. (h)", value=500)
-            if c4.button("Salvar Máquina"):
-                if n_mq:
-                    run_query("INSERT INTO usinagem_maquinas (nome, modelo, meta_manutencao, ativo) VALUES (%s,%s,%s,1)",
-                             (n_mq.upper(), mod_mq, meta_mq), commit=True)
-                    st.rerun()
+        with tab_op:
+            editor_cadastros("usinagem_operadores", "nome", "ops")
+        
+        with tab_mq:
+            st.warning("⚠️ Atenção: Ao editar o nome de uma máquina, o histórico antigo continua com o nome anterior.")
+            editor_cadastros("usinagem_maquinas", "nome", "maqs")
             
-            df_mq = get_dataframe("SELECT * FROM usinagem_maquinas WHERE ativo = 1")
-            st.dataframe(df_mq[['nome', 'modelo', 'meta_manutencao']])
-
-        with tab_par: 
-            # Motivos de Parada (Campo é 'motivo' e não 'nome', adaptação necessária)
-            c1, c2 = st.columns([3, 1])
-            novo = c1.text_input(f"Novo Motivo")
-            if c2.button("Adicionar Motivo"):
-                if novo:
-                    run_query(f"INSERT INTO usinagem_motivos_parada (motivo, ativo) VALUES (%s, 1)", (novo.upper(),), commit=True)
-                    st.rerun()
-            
-            df = get_dataframe(f"SELECT * FROM usinagem_motivos_parada WHERE ativo = 1 ORDER BY motivo")
-            for _, row in df.iterrows():
-                col_a, col_b = st.columns([4, 1])
-                col_a.write(row['motivo'])
-                if col_b.button("🗑️", key=f"del_mot_{row['id']}"):
-                    run_query(f"UPDATE usinagem_motivos_parada SET ativo = 0 WHERE id = %s", (row['id'],), commit=True)
-                    st.rerun()
+        with tab_par:
+            editor_cadastros("usinagem_motivos_parada", "motivo", "paradas")
 
     # ==========================================================================
     # 6. HISTÓRICO & EXPORTAR
@@ -445,3 +474,4 @@ def render_app():
                 st.download_button("Clique aqui para baixar", out.getvalue(), "relatorio_usinagem_cnc.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             except Exception as e:
                 st.error(f"Erro ao gerar Excel: {e}")
+
