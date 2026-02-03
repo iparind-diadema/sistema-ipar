@@ -56,10 +56,10 @@ def get_dataframe(query, params=None):
         return pd.DataFrame()
 
 # ==============================================================================
-# 2. CONFIGURAÇÃO INICIAL (CRIA TABELAS SE NÃO EXISTIREM)
+# 2. CONFIGURAÇÃO INICIAL (CRIA TABELAS E INSERE DADOS PADRÃO)
 # ==============================================================================
 def init_db_furadeira():
-    # Cria tabelas específicas da Furadeira se não existirem
+    # 1. Cria as tabelas se elas não existirem
     queries = [
         """CREATE TABLE IF NOT EXISTS furadeira_operadores (
             id SERIAL PRIMARY KEY, nome TEXT, ativo INTEGER DEFAULT 1
@@ -97,6 +97,32 @@ def init_db_furadeira():
     for q in queries:
         run_query(q, commit=True)
 
+    # 2. Insere os Motivos de Parada Padrão (SÓ SE A TABELA ESTIVER VAZIA)
+    # Isso evita que a lista fique vazia na primeira vez que usar
+    motivos_padrao = [
+        "Afiação de Broca",
+        "Troca de Broca/Macho (Desgaste)",
+        "Quebra de Ferramenta",
+        "Setup / Preparação",
+        "Ajuste de Gabarito",
+        "Aguardando Material",
+        "Manutenção Mecânica",
+        "Manutenção Elétrica",
+        "Limpeza / 5S",
+        "Reunião / Treinamento",
+        "Troca de Óleo/Fluido",
+        "Refeição / Intervalo"
+    ]
+    
+    # Pergunta pro banco: "Tem alguém aí?"
+    check_empty = run_query("SELECT count(*) FROM furadeira_motivos_parada", fetch=True)
+    
+    # Se a resposta for 0 (tabela vazia), ele insere a lista acima
+    if check_empty and check_empty[0][0] == 0:
+        for m in motivos_padrao:
+            run_query("INSERT INTO furadeira_motivos_parada (motivo, ativo) VALUES (%s, 1)", (m,), commit=True)
+
+        
 # ==============================================================================
 # 3. APLICAÇÃO PRINCIPAL
 # ==============================================================================
