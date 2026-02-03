@@ -1,81 +1,73 @@
 import streamlit as st
-from modules import usinagem, estamparia #, furadeiras (futuro)
+import modules.usinagem as usinagem
+import modules.estamparia as estamparia
+import modules.furadeiras as furadeiras  # <--- MÓDULO NOVO
 
-print("--- LEITURA DOS SEGREDOS ---")
-print(f"HOST LIDO: {st.secrets['postgres']['DB_HOST']}")
-print("----------------------------")
-
-# --- CONFIGURAÇÃO DA PÁGINA (SÓ PODE TER AQUI) ---
-st.set_page_config(page_title="Sistema Integrado IPAR", layout="wide", page_icon="🏭")
+# Configuração da Página (Sempre a primeira linha)
+st.set_page_config(page_title="Portal IPAR", page_icon="🏭", layout="wide")
 
 # --- SISTEMA DE LOGIN SIMPLES ---
-# Dicionário de Usuários: "usuario": ["senha", "setor"]
 USUARIOS = {
-    "lider_usinagem": ["usi123", "USINAGEM"],
-    "lider_estamparia": ["est123", "ESTAMPARIA"],
-    "admin": ["admin", "ADMIN"], # Vê tudo
-    "lider_furadeira": ["fur123", "FURADEIRAS"]
+    "lider_usinagem": "usi123",
+    "lider_estamparia": "est123",
+    "lider_furadeira": "fur123",  # <--- LOGIN NOVO
+    "admin": "admin123"
 }
 
 def check_login(user, password):
-    """Verifica se usuário e senha batem"""
-    if user in USUARIOS:
-        if USUARIOS[user][0] == password:
-            return USUARIOS[user][1] # Retorna o setor
-    return None
+    return USUARIOS.get(user) == password
 
-# --- INTERFACE DE LOGIN ---
-if "logado" not in st.session_state:
-    st.session_state["logado"] = False
-    st.session_state["setor"] = None
-
-if not st.session_state["logado"]:
-    st.title("🔒 Portal IPAR - Acesso Restrito")
+def login_screen():
+    st.markdown("<h1 style='text-align: center;'>🏭 Portal Industrial IPAR</h1>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>Acesso Restrito aos Líderes</h3>", unsafe_allow_html=True)
     
-    col1, col2, col3 = st.columns([1,2,1])
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         with st.form("login_form"):
-            st.markdown("### Identificação")
             user = st.text_input("Usuário")
             password = st.text_input("Senha", type="password")
             submit = st.form_submit_button("Entrar no Sistema")
             
             if submit:
-                setor = check_login(user, password)
-                if setor:
-                    st.session_state["logado"] = True
-                    st.session_state["setor"] = setor
+                if check_login(user, password):
+                    st.session_state['usuario'] = user
+                    st.session_state['logado'] = True
                     st.rerun()
                 else:
                     st.error("Usuário ou senha incorretos.")
 
-# --- REDIRECIONAMENTO POR SETOR ---
-else:
-    # Botão de Sair no topo lateral
-    with st.sidebar:
-        st.write(f"👤 Logado como: **{st.session_state['setor']}**")
-        if st.button("Sair / Logout"):
-            st.session_state["logado"] = False
-            st.session_state["setor"] = None
+def main():
+    if 'logado' not in st.session_state:
+        st.session_state['logado'] = False
+
+    if not st.session_state['logado']:
+        login_screen()
+    else:
+        # --- ÁREA LOGADA ---
+        st.sidebar.markdown(f"👤 Olá, **{st.session_state['usuario']}**")
+        
+        if st.sidebar.button("Sair / Logout"):
+            st.session_state['logado'] = False
             st.rerun()
-        st.divider()
 
-    # Lógica de Roteamento (Router)
-    setor = st.session_state["setor"]
+        st.sidebar.title("Navegação")
+        # Define qual módulo abrir com base na escolha ou permissão
+        # Aqui deixamos livre para todos verem todos, ou você pode restringir por 'if'
+        
+        menu_principal = st.sidebar.radio(
+            "Selecione o Setor:",
+            ["Usinagem (CNC)", "Estamparia (Prensas)", "Furadeiras / Acabamento"]
+        )
 
-    if setor == "USINAGEM":
-        usinagem.render_app()
-    
-    elif setor == "ESTAMPARIA":
-        estamparia.render_app()
-    
-    elif setor == "FURADEIRAS":
-        st.title("🚧 Setor de Furadeiras em Construção")
-    
-    elif setor == "ADMIN":
-        st.title("Painel Geral")
-        opcao = st.selectbox("Qual setor deseja visualizar?", ["USINAGEM", "ESTAMPARIA"])
-        if opcao == "USINAGEM":
+        if menu_principal == "Usinagem (CNC)":
             usinagem.render_app()
-        elif opcao == "ESTAMPARIA":
+            
+        elif menu_principal == "Estamparia (Prensas)":
             estamparia.render_app()
+            
+        elif menu_principal == "Furadeiras / Acabamento":
+            furadeiras.render_app()  # <--- CHAMA A TELA NOVA
+
+# Execução
+if __name__ == "__main__":
+    main()
