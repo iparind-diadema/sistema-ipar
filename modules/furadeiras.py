@@ -7,9 +7,8 @@ from datetime import datetime, date, time, timedelta
 import io
 
 # ==============================================================================
-# 1. FUNÇÕES DE BANCO DE DADOS (PADRÃO SEGURO)
+# 1. CONEXÃO E BANCO DE DADOS
 # ==============================================================================
-
 def init_connection():
     try:
         return psycopg2.connect(
@@ -21,26 +20,21 @@ def init_connection():
             sslmode='require'
         )
     except Exception as e:
-        st.error(f"Erro de Conexão: {e}")
+        st.error(f"Erro Conexão: {e}")
         return None
 
 def run_query(query, params=(), fetch=False, commit=False):
     conn = init_connection()
     if not conn: return None
-    result = None
     try:
         cur = conn.cursor()
         cur.execute(query, params)
-        if commit:
-            conn.commit()
-            result = "OK"
-        if fetch:
-            result = cur.fetchall()
-        cur.close()
-        conn.close()
-        return result
-    except Exception as e:
-        st.error(f"Erro SQL: {e}")
+        res = None
+        if commit: conn.commit(); res = "OK"
+        if fetch: res = cur.fetchall()
+        cur.close(); conn.close()
+        return res
+    except Exception:
         if conn: conn.rollback()
         return None
 
@@ -51,250 +45,198 @@ def get_dataframe(query, params=None):
         df = pd.read_sql(query, conn, params=params)
         conn.close()
         return df
-    except Exception as e:
-        st.error(f"Erro ao gerar tabela: {e}")
-        return pd.DataFrame()
+    except Exception: return pd.DataFrame()
 
-# ==============================================================================
-# 2. CONFIGURAÇÃO INICIAL (CRIA TABELAS E INSERE DADOS PADRÃO)
-# ==============================================================================
 def init_db_furadeira():
-    # 1. Cria as tabelas se elas não existirem
     queries = [
-        """CREATE TABLE IF NOT EXISTS furadeira_operadores (
-            id SERIAL PRIMARY KEY, nome TEXT, ativo INTEGER DEFAULT 1
-        );""",
-        """CREATE TABLE IF NOT EXISTS furadeira_motivos_parada (
-            id SERIAL PRIMARY KEY, motivo TEXT, ativo INTEGER DEFAULT 1
-        );""",
+        "CREATE TABLE IF NOT EXISTS furadeira_operadores (id SERIAL PRIMARY KEY, nome TEXT, ativo INTEGER DEFAULT 1);",
+        "CREATE TABLE IF NOT EXISTS furadeira_motivos_parada (id SERIAL PRIMARY KEY, motivo TEXT, ativo INTEGER DEFAULT 1);",
         """CREATE TABLE IF NOT EXISTS furadeira_apontamentos (
-            id SERIAL PRIMARY KEY,
-            data_registro DATE,
-            operador TEXT,
-            cliente TEXT,
-            peca TEXT,
-            tipo_operacao TEXT,
-            tempo_ciclo_seg REAL,
-            inicio_prod TIME,
-            fim_prod TIME,
-            qtd_produzida INTEGER,
-            refugo INTEGER,
-            eficiencia_calc REAL,
-            observacao TEXT,
-            ativo INTEGER DEFAULT 1,
-            criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            id SERIAL PRIMARY KEY, data_registro DATE, operador TEXT, cliente TEXT, peca TEXT, 
+            tipo_operacao TEXT, tempo_ciclo_seg REAL, inicio_prod TIME, fim_prod TIME, 
+            qtd_produzida INTEGER, refugo INTEGER, eficiencia_calc REAL, observacao TEXT, 
+            ativo INTEGER DEFAULT 1, criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );""",
-        """CREATE TABLE IF NOT EXISTS furadeira_paradas_reg (
-            id SERIAL PRIMARY KEY,
-            data_registro DATE,
-            motivo TEXT,
-            inicio TIME,
-            fim TIME,
-            observacao TEXT,
-            ativo INTEGER DEFAULT 1
-        );"""
+        "CREATE TABLE IF NOT EXISTS furadeira_paradas_reg (id SERIAL PRIMARY KEY, data_registro DATE, motivo TEXT, inicio TIME, fim TIME, observacao TEXT, ativo INTEGER DEFAULT 1);"
     ]
-    for q in queries:
-        run_query(q, commit=True)
-
-    # 2. Insere os Motivos de Parada Padrão (SÓ SE A TABELA ESTIVER VAZIA)
-    # Isso evita que a lista fique vazia na primeira vez que usar
-    motivos_padrao = [
-        "Afiação de Broca",
-        "Troca de Broca/Macho (Desgaste)",
-        "Quebra de Ferramenta",
-        "Setup / Preparação",
-        "Ajuste de Gabarito",
-        "Aguardando Material",
-        "Manutenção Mecânica",
-        "Manutenção Elétrica",
-        "Limpeza / 5S",
-        "Reunião / Treinamento",
-        "Troca de Óleo/Fluido",
-        "Refeição / Intervalo"
-    ]
+    for q in queries: run_query(q, commit=True)
     
-    # Pergunta pro banco: "Tem alguém aí?"
-    check_empty = run_query("SELECT count(*) FROM furadeira_motivos_parada", fetch=True)
-    
-    # Se a resposta for 0 (tabela vazia), ele insere a lista acima
-    if check_empty and check_empty[0][0] == 0:
-        for m in motivos_padrao:
-            run_query("INSERT INTO furadeira_motivos_parada (motivo, ativo) VALUES (%s, 1)", (m,), commit=True)
+    # Inserir motivos padrão se vazio
+    if run_query("SELECT count(*) FROM furadeira_motivos_parada", fetch=True)[0][0] == 0:
+        padroes = ["Afiação de Broca", "Quebra de Ferramenta", "Setup/Preparação", "Aguardando Material", "Manutenção", "Limpeza/5S", "Refeição"]
+        for p in padroes: run_query("INSERT INTO furadeira_motivos_parada (motivo, ativo) VALUES (%s, 1)", (p,), commit=True)
 
-        
 # ==============================================================================
-# 3. APLICAÇÃO PRINCIPAL
+# 2. APP PRINCIPAL DA FURADEIRA
 # ==============================================================================
 def render_app():
-    # Garante que as tabelas existem
     init_db_furadeira()
     
     st.sidebar.divider()
-    st.sidebar.title("🔩 Setor Furadeira")
-    
-    menu = st.sidebar.radio("Navegação", [
+    # Menu Interno da Furadeira
+    menu_fura = st.sidebar.radio("Menu Furadeira", [
         "📝 Apontamento Diário",
+        "📊 Dashboard & KPIs",
         "🛑 Registro de Paradas",
-        "⚙️ Cadastros & Dados"
+        "🔐 Cadastros & Admin" # Tem cadeado no nome pra indicar senha
     ])
 
-    # ==========================================================================
-    # ABA 1: APONTAMENTO DIÁRIO
-    # ==========================================================================
-    if menu == "📝 Apontamento Diário":
+    # --------------------------------------------------------------------------
+    # 1. APONTAMENTO
+    # --------------------------------------------------------------------------
+    if menu_fura == "📝 Apontamento Diário":
         st.header("📝 Apontamento de Produção")
         
-        # Carregar Operadores
-        ops = run_query("SELECT nome FROM furadeira_operadores WHERE ativo = 1 ORDER BY nome", fetch=True)
-        lista_ops = [o[0] for o in ops] if ops else []
+        ops = [r[0] for r in run_query("SELECT nome FROM furadeira_operadores WHERE ativo=1 ORDER BY nome", fetch=True)]
+        if not ops: st.warning("Cadastre operadores na aba Admin primeiro.")
         
-        if not lista_ops:
-            st.warning("⚠️ Cadastre Operadores na aba 'Cadastros' primeiro.")
-        
-        with st.form("form_furadeira", clear_on_submit=False):
-            st.subheader("1. Dados Gerais")
+        with st.form("form_fura"):
             c1, c2, c3 = st.columns(3)
-            data_reg = c1.date_input("Data", date.today())
-            operador = c2.selectbox("Operador", lista_ops) if lista_ops else c2.text_input("Operador (Temp)")
-            tipo_op = c3.selectbox("Tipo de Operação", ["Furadeira (F)", "Escareador (E)", "Rosqueadeira (R)", "Rebarba (RB)"])
+            dt = c1.date_input("Data", date.today())
+            op = c2.selectbox("Operador", ops) if ops else c2.text_input("Operador")
+            tipo = c3.selectbox("Operação", ["Furadeira (F)", "Escareador (E)", "Rosqueadeira (R)", "Rebarba (RB)"])
             
             c4, c5 = st.columns(2)
-            cliente = c4.text_input("Cliente")
-            peca = c5.text_input("Descrição da Peça")
+            cli = c4.text_input("Cliente")
+            peca = c5.text_input("Peça")
             
-            st.divider()
-            st.subheader("2. Tempos e Quantidades")
+            st.markdown("---")
+            k1, k2, k3 = st.columns(3)
+            hi = k1.time_input("Início", time(7,0))
+            hf = k2.time_input("Fim", time(17,0))
+            ciclo = k3.number_input("Ciclo (seg)", value=30.0, step=1.0)
             
-            col_t1, col_t2, col_t3 = st.columns(3)
-            h_ini = col_t1.time_input("Hora Início", time(7,0))
-            h_fim = col_t2.time_input("Hora Fim", time(17,0))
-            ciclo = col_t3.number_input("Tempo de Ciclo (segundos)", min_value=1.0, value=30.0, step=1.0)
+            k4, k5 = st.columns(2)
+            qtd = k4.number_input("Produzido (Boas)", min_value=0)
+            ref = k5.number_input("Refugo", min_value=0)
+            obs = st.text_area("Obs")
             
-            col_q1, col_q2 = st.columns(2)
-            qtd = col_q1.number_input("Peças Boas", min_value=0)
-            refugo = col_q2.number_input("Refugo", min_value=0)
-            
-            obs = st.text_area("Observações (Opcional)")
-
-            # Cálculo de Prévia de Eficiência (Visual)
-            submit = st.form_submit_button("💾 Salvar Produção")
-            
-            if submit:
-                # Validar
-                dt_i = datetime.combine(data_reg, h_ini)
-                dt_f = datetime.combine(data_reg, h_fim)
-                if h_fim < h_ini: dt_f += timedelta(days=1)
+            if st.form_submit_button("Salvar Produção"):
+                dti = datetime.combine(dt, hi)
+                dtf = datetime.combine(dt, hf)
+                if hf < hi: dtf += timedelta(days=1)
+                h_trab = (dtf - dti).total_seconds() / 3600
                 
-                horas_trabalhadas = (dt_f - dt_i).total_seconds() / 3600
-                tempo_disponivel_seg = horas_trabalhadas * 3600
+                # Cálculo Eficiência
+                efic = 0
+                if h_trab > 0:
+                    prod_teorica = (h_trab * 3600) / ciclo if ciclo > 0 else 0
+                    efic = ((qtd + ref) / prod_teorica * 100) if prod_teorica > 0 else 0
                 
-                # Cálculo Eficiência Simplificado
-                # Eficiência = (Peças * Ciclo) / Tempo Disponível
-                eficiencia = 0
-                if tempo_disponivel_seg > 0:
-                    tempo_produtivo = (qtd + refugo) * ciclo
-                    eficiencia = (tempo_produtivo / tempo_disponivel_seg) * 100
+                sigla = {"Furadeira (F)":"F", "Escareador (E)":"E", "Rosqueadeira (R)":"R", "Rebarba (RB)":"RB"}.get(tipo, "F")
                 
-                if horas_trabalhadas <= 0:
-                    st.error("❌ Horário inválido (Início maior ou igual ao Fim).")
-                else:
-                    # Mapear Siglas
-                    sigla_map = {
-                        "Furadeira (F)": "F",
-                        "Escareador (E)": "E",
-                        "Rosqueadeira (R)": "R",
-                        "Rebarba (RB)": "RB"
-                    }
-                    sigla = sigla_map.get(tipo_op, "F")
-                    
-                    sql = """
-                        INSERT INTO furadeira_apontamentos 
-                        (data_registro, operador, cliente, peca, tipo_operacao, tempo_ciclo_seg, inicio_prod, fim_prod, qtd_produzida, refugo, eficiencia_calc, observacao, ativo)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1)
-                    """
-                    run_query(sql, (data_reg, operador, cliente.upper(), peca.upper(), sigla, ciclo, h_ini, h_fim, qtd, refugo, eficiencia, obs), commit=True)
-                    st.success(f"✅ Produção Salva! Eficiência Calculada: {eficiencia:.1f}%")
-                    st.rerun()
-
-    # ==========================================================================
-    # ABA 2: PARADAS
-    # ==========================================================================
-    elif menu == "🛑 Registro de Paradas":
-        st.header("🛑 Controle de Paradas")
-        
-        motivos = run_query("SELECT motivo FROM furadeira_motivos_parada WHERE ativo = 1 ORDER BY motivo", fetch=True)
-        lista_motivos = [m[0] for m in motivos] if motivos else []
-        
-        with st.form("form_parada"):
-            c1, c2 = st.columns(2)
-            d_p = c1.date_input("Data", date.today())
-            mot = c2.selectbox("Motivo", lista_motivos) if lista_motivos else c2.text_input("Motivo (Temp)")
-            
-            c3, c4 = st.columns(2)
-            hi = c3.time_input("Início Parada", time(12,0))
-            hf = c4.time_input("Fim Parada", time(13,0))
-            
-            obs_p = st.text_input("Detalhe (Opcional)")
-            
-            if st.form_submit_button("Registrar Parada"):
-                run_query("""
-                    INSERT INTO furadeira_paradas_reg (data_registro, motivo, inicio, fim, observacao, ativo)
-                    VALUES (%s, %s, %s, %s, %s, 1)
-                """, (d_p, mot, hi, hf, obs_p), commit=True)
-                st.success("Parada Registrada!")
+                run_query("""INSERT INTO furadeira_apontamentos 
+                    (data_registro, operador, cliente, peca, tipo_operacao, tempo_ciclo_seg, inicio_prod, fim_prod, qtd_produzida, refugo, eficiencia_calc, observacao, ativo)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1)""",
+                    (dt, op, cli.upper(), peca.upper(), sigla, ciclo, hi, hf, qtd, ref, efic, obs), commit=True)
+                st.success(f"Salvo! Eficiência: {efic:.1f}%")
                 st.rerun()
+
+    # --------------------------------------------------------------------------
+    # 2. DASHBOARD & KPIS (NOVO!)
+    # --------------------------------------------------------------------------
+    elif menu_fura == "📊 Dashboard & KPIs":
+        st.header("📊 Indicadores de Desempenho")
+        filtro_data = st.date_input("Filtrar Data", date.today())
+        
+        # Dados do dia
+        df = get_dataframe(f"SELECT * FROM furadeira_apontamentos WHERE ativo=1 AND data_registro='{filtro_data}'")
+        
+        # KPI Cards
+        total_pcs = df['qtd_produzida'].sum() if not df.empty else 0
+        total_ref = df['refugo'].sum() if not df.empty else 0
+        media_efic = df['eficiencia_calc'].mean() if not df.empty else 0
+        
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Peças Produzidas", f"{total_pcs}")
+        k2.metric("Refugo Total", f"{total_ref}", delta=f"{(total_ref/(total_pcs+total_ref)*100 if total_pcs>0 else 0):.1f}% Taxa", delta_color="inverse")
+        k3.metric("Eficiência Média", f"{media_efic:.1f}%")
         
         st.divider()
-        st.subheader("Histórico do Dia")
-        df_p = get_dataframe(f"SELECT id, motivo, inicio, fim, observacao FROM furadeira_paradas_reg WHERE data_registro = '{date.today()}' AND ativo = 1")
-        st.dataframe(df_p, use_container_width=True)
+        
+        # Gráficos
+        c1, c2 = st.columns(2)
+        
+        with c1:
+            if not df.empty:
+                st.subheader("Eficiência por Operador")
+                # Gráfico de Barras Colorido pela Eficiência
+                fig_bar = px.bar(df, x='operador', y='eficiencia_calc', color='cliente', title="Eficiência % por Registro", text_auto='.1f')
+                fig_bar.add_hline(y=90, line_dash="dot", annotation_text="Meta 90%", annotation_position="bottom right")
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.info("Sem produção nesta data.")
+                
+        with c2:
+            st.subheader("Motivos de Parada (Pareto)")
+            df_par = get_dataframe(f"SELECT * FROM furadeira_paradas_reg WHERE ativo=1 AND data_registro='{filtro_data}'")
+            if not df_par.empty:
+                # Converter para minutos
+                df_par['minutos'] = df_par.apply(lambda x: (datetime.combine(date.min, x['fim']) - datetime.combine(date.min, x['inicio'])).seconds / 60, axis=1)
+                fig_pie = px.pie(df_par, values='minutos', names='motivo', title='Distribuição de Tempo Parado')
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info("Nenhuma parada registrada hoje.")
 
-    # ==========================================================================
-    # ABA 3: CADASTROS & DADOS
-    # ==========================================================================
-    elif menu == "⚙️ Cadastros & Dados":
-        st.header("⚙️ Gestão de Dados - Furadeira")
+    # --------------------------------------------------------------------------
+    # 3. PARADAS
+    # --------------------------------------------------------------------------
+    elif menu_fura == "🛑 Registro de Paradas":
+        st.header("🛑 Registrar Parada")
+        mots = [r[0] for r in run_query("SELECT motivo FROM furadeira_motivos_parada WHERE ativo=1 ORDER BY motivo", fetch=True)]
         
-        tab1, tab2, tab3 = st.tabs(["👥 Operadores", "🛑 Motivos Parada", "📊 Histórico Completo"])
-        
-        # Função Auxiliar de Edição (A mesma da Usinagem)
-        def editor_simples(tabela, col_nome, key_suf):
-            df = get_dataframe(f"SELECT id, {col_nome}, ativo FROM {tabela} WHERE ativo = 1 ORDER BY {col_nome}")
-            edited = st.data_editor(
-                df, 
-                column_config={"id": None, "ativo": None, col_nome: st.column_config.TextColumn("Descrição", required=True)},
-                num_rows="dynamic",
-                key=f"ed_{key_suf}",
-                use_container_width=True
-            )
-            if st.button("Salvar Alterações", key=f"btn_{key_suf}"):
-                for index, row in edited.iterrows():
-                    nome = row[col_nome]
-                    if not nome: continue
-                    if pd.notna(row['id']) and isinstance(row['id'], (int, float)):
-                        run_query(f"UPDATE {tabela} SET {col_nome} = %s WHERE id = %s", (str(nome).upper(), int(row['id'])), commit=True)
-                    else:
-                        run_query(f"INSERT INTO {tabela} ({col_nome}, ativo) VALUES (%s, 1)", (str(nome).upper(),), commit=True)
-                st.success("Salvo!")
+        with st.form("form_p"):
+            c1, c2 = st.columns(2)
+            mot = c1.selectbox("Motivo", mots) if mots else c1.text_input("Motivo")
+            obs = c2.text_input("Obs")
+            c3, c4 = st.columns(2)
+            ini = c3.time_input("Início", time(10,0))
+            fim = c4.time_input("Fim", time(10,15))
+            
+            if st.form_submit_button("Salvar Parada"):
+                run_query("INSERT INTO furadeira_paradas_reg (data_registro, motivo, inicio, fim, observacao, ativo) VALUES (%s,%s,%s,%s,%s,1)",
+                          (date.today(), mot, ini, fim, obs), commit=True)
+                st.success("Registrado!")
                 st.rerun()
 
-        with tab1:
-            st.info("Cadastre os Operadores aqui para aparecerem na lista.")
-            editor_simples("furadeira_operadores", "nome", "f_ops")
-            
-        with tab2:
-            st.info("Cadastre motivos como: Afiação de Broca, Manutenção, Falta de Peça.")
-            editor_simples("furadeira_motivos_parada", "motivo", "f_mot")
-            
+    # --------------------------------------------------------------------------
+    # 4. CADASTROS & ADMIN (COM SENHA!)
+    # --------------------------------------------------------------------------
+    elif menu_fura == "🔐 Cadastros & Admin":
+        st.header("🔒 Área Restrita - Supervisão")
+        
+        # --- BLOQUEIO DE SENHA ---
+        senha = st.text_input("Digite a senha de supervisor", type="password")
+        if senha != "1234":
+            st.warning("🔒 Digite a senha correta para acessar Cadastros, Histórico e Exportação.")
+            return # Para o código aqui se a senha estiver errada
+        
+        # --- SE PASSOU DA SENHA, MOSTRA TUDO: ---
+        st.success("Acesso Permitido")
+        tab1, tab2, tab3 = st.tabs(["👥 Operadores", "🛑 Motivos Parada", "📤 Exportar Excel"])
+        
+        # Editor Genérico
+        def admin_editor(tabela, col_nome, key):
+            df = get_dataframe(f"SELECT id, {col_nome}, ativo FROM {tabela} WHERE ativo=1 ORDER BY {col_nome}")
+            edit = st.data_editor(df, column_config={"id":None, "ativo":None, col_nome: st.column_config.TextColumn("Nome", required=True)}, num_rows="dynamic", key=key)
+            if st.button(f"Salvar {key}"):
+                for i, row in edit.iterrows():
+                    if row[col_nome]:
+                        if pd.notna(row['id']): run_query(f"UPDATE {tabela} SET {col_nome}=%s WHERE id=%s", (str(row[col_nome]).upper(), int(row['id'])), commit=True)
+                        else: run_query(f"INSERT INTO {tabela} ({col_nome}, ativo) VALUES (%s,1)", (str(row[col_nome]).upper(),), commit=True)
+                st.success("Salvo!"); st.rerun()
+        
+        with tab1: admin_editor("furadeira_operadores", "nome", "ed_ops")
+        with tab2: admin_editor("furadeira_motivos_parada", "motivo", "ed_mots")
         with tab3:
-            st.subheader("Histórico de Produção")
-            df_h = get_dataframe("SELECT * FROM furadeira_apontamentos WHERE ativo = 1 ORDER BY id DESC LIMIT 100")
-            st.dataframe(df_h)
+            st.subheader("Histórico Completo")
+            df_full = get_dataframe("SELECT * FROM furadeira_apontamentos WHERE ativo=1 ORDER BY id DESC")
+            st.dataframe(df_full, use_container_width=True)
             
-            if st.button("Baixar Excel Completo"):
-                out = io.BytesIO()
-                with pd.ExcelWriter(out, engine='openpyxl') as w:
-                    get_dataframe("SELECT * FROM furadeira_apontamentos WHERE ativo=1").to_excel(w, sheet_name="Producao", index=False)
-                    get_dataframe("SELECT * FROM furadeira_paradas_reg WHERE ativo=1").to_excel(w, sheet_name="Paradas", index=False)
-                st.download_button("Download .xlsx", out.getvalue(), "relatorio_furadeira.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            # Botão de Download
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_full.to_excel(writer, sheet_name='Producao', index=False)
+                get_dataframe("SELECT * FROM furadeira_paradas_reg WHERE ativo=1").to_excel(writer, sheet_name='Paradas', index=False)
+            
+            st.download_button("📥 Baixar Planilha Completa", buffer.getvalue(), "relatorio_furadeira.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
